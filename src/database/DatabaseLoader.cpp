@@ -1,6 +1,7 @@
 #include "DatabaseLoader.hpp"
 #include <iostream>
-#include <tuple>
+#include <tuple> // Required for std::make_tuple
+
 namespace MarketStream
 {
 
@@ -14,8 +15,6 @@ namespace MarketStream
             pqxx::connection C(conn_str);
             pqxx::work W(C);
 
-            // SQL: Create Table matching our C++ Struct
-            // We use 'bigint' for timestamps and IDs to match uint64_t
             W.exec(R"(
                 CREATE TABLE IF NOT EXISTS trades (
                     trade_id BIGINT,
@@ -36,7 +35,7 @@ namespace MarketStream
         catch (const std::exception &e)
         {
             std::cerr << "[DB ERROR] Init Schema failed: " << e.what() << "\n";
-            throw; // Re-throw so main() knows we failed
+            throw;
         }
     }
 
@@ -50,29 +49,27 @@ namespace MarketStream
             pqxx::connection C(conn_str);
             pqxx::work W(C);
 
-            // High-Performance Stream (COPY command)
-            // We specify exactly which columns we are writing to.
-            pqxx::stream_to stream = pqxx::stream_to::table(W,
-                                                            "trades",
-                                                            {"symbol", "price", "volume", "timestamp", "side", "trade_id"});
+            // --- FIXED SECTION START ---
+            // Old Way (Error): pqxx::stream_to stream = pqxx::stream_to::table(...)
+            // New Way (Correct): Use the constructor directly
+            pqxx::stream_to stream(W,
+                                   "trades",
+                                   std::vector<std::string>{"symbol", "price", "volume", "timestamp", "side", "trade_id"});
+            // --- FIXED SECTION END ---
 
-            // Iterate and shove data into the pipe
             for (const auto &t : trades)
             {
-                // We send data in the EXACT order of the columns list above
                 stream << std::make_tuple(
                     t.symbol,
                     t.price,
                     t.volume,
                     t.timestamp,
-                    std::string(1, t.side), // Convert char to string for DB
+                    std::string(1, t.side),
                     t.trade_id);
             }
 
-            // Close the stream (flushes data to DB)
             stream.complete();
-
-            W.commit(); // Make it permanent
+            W.commit();
             std::cout << "[DB] Successfully loaded " << trades.size() << " trades.\n";
         }
         catch (const std::exception &e)
