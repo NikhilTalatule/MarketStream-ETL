@@ -13,7 +13,10 @@ find_package(PostgreSQL REQUIRED)
 include_directories(${PostgreSQL_INCLUDE_DIRS})
 
 # Main executable
-add_executable(etl_pipeline src/main.cpp)
+add_executable(etl_pipeline 
+    src/main.cpp 
+    src/parser/CsvParser.cpp
+)
 
 # Link libraries
 target_link_libraries(etl_pipeline PRIVATE pqxx pq)

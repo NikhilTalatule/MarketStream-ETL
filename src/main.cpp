@@ -1,60 +1,50 @@
 #include <iostream>
-#include "../include/csv_parser.hpp"
-#include "../include/database_loader.hpp"
+#include <vector>
+#include <filesystem>
+#include "parser/CsvParser.hpp" // Include our new high-speed parser
+
+// Note: We will add the DatabaseLoader later. For now, we verify the Parser works.
 
 int main()
 {
-    std::cout << "═══════════════════════════════════════════════════\n";
-    std::cout << "     ETL Pipeline v1.0 - CSV to PostgreSQL\n";
-    std::cout << "═══════════════════════════════════════════════════\n\n";
+    // 1. Setup the High-Performance Environment
+    // turning off sync with C-style I/O improves std::cout speed
+    std::ios_base::sync_with_stdio(false);
 
-    // Configuration
-    const std::string csv_file = "sample_data.csv";
-    const std::string db_host = "localhost";
-    const std::string db_name = "etl_pipeline_db";
-    const std::string db_user = "postgres";
-    const std::string db_password = "Nikhil@10"; 
+    std::cout << "===================================================\n";
+    std::cout << "   MarketStream ETL | High-Frequency Trading Engine\n";
+    std::cout << "===================================================\n";
 
-    // Step 1: Parse CSV
-    std::cout << "📂 Step 1: Parsing CSV file...\n";
-    CSVParser parser;
-    if (!parser.parse(csv_file))
+    // 2. Define the Input File
+    // Ensure you have created this file in your 'build' folder!
+    std::filesystem::path csv_file = "sample_data.csv";
+
+    // 3. Initialize the Engine components
+    MarketStream::CsvParser parser;
+
+    // 4. Execute the Parse
+    std::cout << "[INFO] Reading " << csv_file << " ...\n";
+
+    try
     {
+        auto trades = parser.parse(csv_file);
+
+        // 5. Report Results (The "Dashboard")
+        std::cout << "[SUCCESS] Parsed " << trades.size() << " trades successfully.\n";
+
+        if (!trades.empty())
+        {
+            std::cout << "[DEBUG] Sample Trade (First Row):\n";
+            std::cout << "   Symbol: " << trades[0].symbol << "\n";
+            std::cout << "   Price:  " << trades[0].price << "\n";
+            std::cout << "   Volume: " << trades[0].volume << "\n";
+        }
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "[CRITICAL ERROR] Engine crash: " << e.what() << "\n";
         return 1;
     }
-
-    std::cout << "   Headers: ";
-    for (const auto &h : parser.get_headers())
-    {
-        std::cout << h << " | ";
-    }
-    std::cout << "\n\n";
-
-    // Step 2: Connect to Database
-    std::cout << "🗄️  Step 2: Connecting to PostgreSQL...\n";
-    DatabaseLoader loader(db_host, db_name, db_user, db_password);
-
-    // Step 3: Create Table
-    std::cout << "\n📋 Step 3: Creating table...\n";
-    if (!loader.create_table())
-    {
-        return 1;
-    }
-
-    // Step 4: Load Data
-    std::cout << "\n⬆️  Step 4: Loading data to database...\n";
-    if (!loader.load_data(parser.get_data()))
-    {
-        return 1;
-    }
-
-    // Step 5: Verify
-    std::cout << "\n✅ Step 5: Verification\n";
-    loader.display_data();
-
-    std::cout << "\n═══════════════════════════════════════════════════\n";
-    std::cout << "  ✨ ETL Pipeline Completed Successfully! ✨\n";
-    std::cout << "═══════════════════════════════════════════════════\n";
 
     return 0;
 }
