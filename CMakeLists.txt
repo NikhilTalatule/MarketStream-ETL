@@ -16,6 +16,7 @@ include_directories(${PostgreSQL_INCLUDE_DIRS})
 add_executable(etl_pipeline 
     src/main.cpp 
     src/parser/CsvParser.cpp
+    src/database/DatabaseLoader.cpp
 )
 
 # Link libraries

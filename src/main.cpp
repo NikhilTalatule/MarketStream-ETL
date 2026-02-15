@@ -1,48 +1,45 @@
 #include <iostream>
 #include <vector>
 #include <filesystem>
-#include "parser/CsvParser.hpp" // Include our new high-speed parser
-
-// Note: We will add the DatabaseLoader later. For now, we verify the Parser works.
+#include "parser/CsvParser.hpp"
+#include "database/DatabaseLoader.hpp"
 
 int main()
 {
-    // 1. Setup the High-Performance Environment
-    // turning off sync with C-style I/O improves std::cout speed
+    // Optimization: Fast I/O
     std::ios_base::sync_with_stdio(false);
 
     std::cout << "===================================================\n";
     std::cout << "   MarketStream ETL | High-Frequency Trading Engine\n";
     std::cout << "===================================================\n";
 
-    // 2. Define the Input File
-    // Ensure you have created this file in your 'build' folder!
+    // Configuration
     std::filesystem::path csv_file = "sample_data.csv";
-
-    // 3. Initialize the Engine components
-    MarketStream::CsvParser parser;
-
-    // 4. Execute the Parse
-    std::cout << "[INFO] Reading " << csv_file << " ...\n";
+    // NOTE: Replace 'password' with your actual password!
+    std::string db_conn = "user=postgres password=Nikhil@10 host=localhost port=5432 dbname=etl_pipeline_db";
 
     try
     {
+        // 1. Parse
+        std::cout << "[INFO] Reading " << csv_file << " ...\n";
+        MarketStream::CsvParser parser;
         auto trades = parser.parse(csv_file);
+        std::cout << "[SUCCESS] Parsed " << trades.size() << " trades.\n";
 
-        // 5. Report Results (The "Dashboard")
-        std::cout << "[SUCCESS] Parsed " << trades.size() << " trades successfully.\n";
+        // 2. Database Init
+        std::cout << "[INFO] Connecting to Database...\n";
+        MarketStream::DatabaseLoader loader(db_conn);
+        loader.init_schema();
 
-        if (!trades.empty())
-        {
-            std::cout << "[DEBUG] Sample Trade (First Row):\n";
-            std::cout << "   Symbol: " << trades[0].symbol << "\n";
-            std::cout << "   Price:  " << trades[0].price << "\n";
-            std::cout << "   Volume: " << trades[0].volume << "\n";
-        }
+        // 3. Load Data
+        std::cout << "[INFO] Starting Bulk Load...\n";
+        loader.bulk_load(trades);
+
+        std::cout << "[SUCCESS] ETL Pipeline Finished.\n";
     }
     catch (const std::exception &e)
     {
-        std::cerr << "[CRITICAL ERROR] Engine crash: " << e.what() << "\n";
+        std::cerr << "[CRITICAL ERROR] Pipeline crashed: " << e.what() << "\n";
         return 1;
     }
 
