@@ -2,8 +2,9 @@
 
 #include <string>
 #include <vector>
-#include <pqxx/pqxx> // The PostgreSQL Driver
+#include <pqxx/pqxx>
 #include "../model/Trade.hpp"
+#include "../indicators/TechnicalIndicators.hpp"  // NEW
 
 namespace MarketStream
 {
@@ -11,25 +12,17 @@ namespace MarketStream
     class DatabaseLoader
     {
     public:
-        // Constructor: Establishes the connection immediately
-        DatabaseLoader(const std::string &connection_string);
-
-        // Destructor: Closes connection automatically (RAII)
+        DatabaseLoader(const std::string& connection_string);
         ~DatabaseLoader() = default;
 
-        /**
-         * @brief Creates the 'trades' table if it doesn't exist.
-         * Defines the schema with correct data types (BigInt, Double, Varchar).
-         */
+        // Creates both tables: 'trades' and 'technical_indicators'
         void init_schema();
 
-        /**
-         * @brief Uses High-Performance 'COPY' protocol to stream data.
-         * * PERFORMANCE NOTE:
-         * Instead of 1000 INSERT statements, we open one stream and push
-         * data directly. This is the fastest way to load Postgres.
-         */
-        void bulk_load(const std::vector<Trade> &trades);
+        // Streams trades into DB via COPY protocol + staging table
+        void bulk_load(const std::vector<Trade>& trades);
+
+        // NEW: Saves computed indicators into technical_indicators table
+        void save_indicators(const std::vector<IndicatorResult>& indicators);
 
     private:
         std::string conn_str;

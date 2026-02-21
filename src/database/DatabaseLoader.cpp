@@ -9,27 +9,7 @@ namespace MarketStream
         : conn_str(connection_string) {}
 
     // =========================================================================
-    // init_schema()
-    // =========================================================================
-    // WHAT CHANGED AND WHY:
-    //
-    // 1. Added PRIMARY KEY on trade_id
-    //    WHY: A Primary Key is a contract with the database — "this column
-    //    uniquely identifies every row". PostgreSQL will REJECT any INSERT
-    //    that tries to add a trade_id that already exists. This is your
-    //    first line of defense against corrupt/duplicate data.
-    //    In finance: duplicate trade records = wrong P&L calculations.
-    //
-    // 2. Added CREATE UNIQUE INDEX
-    //    WHY: Even with a PK, we add a composite unique index on
-    //    (trade_id, timestamp) for fast lookups. When you query
-    //    "give me all trades for trade_id=1000001", PostgreSQL uses
-    //    this index instead of scanning every row. O(log n) vs O(n).
-    //
-    // 3. IDEMPOTENT DESIGN
-    //    CREATE TABLE IF NOT EXISTS = safe to run multiple times.
-    //    CREATE INDEX IF NOT EXISTS = same.
-    //    The schema will look identical whether this is run 1 time or 100 times.
+    // init_schema() — Creates BOTH tables with constraints and indexes
     // =========================================================================
     void DatabaseLoader::init_schema()
     {
@@ -38,43 +18,76 @@ namespace MarketStream
             pqxx::connection C(conn_str);
             pqxx::work W(C);
 
-            // Step 1: Create table with PRIMARY KEY
-            // trade_id BIGINT PRIMARY KEY means:
-            //   - trade_id cannot be NULL
-            //   - trade_id must be unique across all rows
-            //   - PostgreSQL automatically creates a B-Tree index on it
+            // ------------------------------------------------------------------
+            // TABLE 1: trades — Raw trade executions
+            // This is identical to before. Unchanged.
+            // ------------------------------------------------------------------
             W.exec(R"(
                 CREATE TABLE IF NOT EXISTS trades (
-                    trade_id  BIGINT          PRIMARY KEY,
-                    order_id  BIGINT          NOT NULL,
-                    timestamp BIGINT          NOT NULL,
-                    symbol    VARCHAR(10)     NOT NULL,
+                    trade_id  BIGINT           PRIMARY KEY,
+                    order_id  BIGINT           NOT NULL,
+                    timestamp BIGINT           NOT NULL,
+                    symbol    VARCHAR(10)      NOT NULL,
                     price     DOUBLE PRECISION NOT NULL CHECK (price > 0),
-                    volume    INTEGER         NOT NULL CHECK (volume > 0),
-                    side      CHAR(1)         NOT NULL CHECK (side IN ('B', 'S', 'N')),
-                    type      CHAR(1)         NOT NULL CHECK (type IN ('M', 'L', 'I')),
-                    is_pro    BOOLEAN         NOT NULL
+                    volume    INTEGER          NOT NULL CHECK (volume > 0),
+                    side      CHAR(1)          NOT NULL CHECK (side IN ('B','S','N')),
+                    type      CHAR(1)          NOT NULL CHECK (type IN ('M','L','I')),
+                    is_pro    BOOLEAN          NOT NULL
                 );
             )");
 
-            // Step 2: Create a performance index on symbol + timestamp
-            // WHY THIS INDEX?
-            // The most common query pattern in trading analytics is:
-            // "Give me all RELIANCE trades between 10:00 and 10:30"
-            // That query filters by symbol AND timestamp.
-            // This index makes that query use O(log n) lookup instead of
-            // O(n) full table scan. For 10 million rows, that's the
-            // difference between 1ms and 10 seconds.
-            //
-            // IF NOT EXISTS = safe to run multiple times, won't error if
-            // the index already exists from a previous run.
             W.exec(R"(
                 CREATE INDEX IF NOT EXISTS idx_trades_symbol_time
                 ON trades (symbol, timestamp);
             )");
 
+            // ------------------------------------------------------------------
+            // TABLE 2: technical_indicators — Computed signals per symbol
+            // ------------------------------------------------------------------
+            // WHY A SEPARATE TABLE AND NOT COLUMNS IN trades?
+            //
+            // trades = one row per TRADE EVENT (individual execution)
+            // technical_indicators = one row per SYMBOL per COMPUTATION RUN
+            //
+            // These are fundamentally different granularities.
+            // A trade is immutable — it happened once, never changes.
+            // An indicator is recomputed every pipeline run with fresh data.
+            //
+            // Mixing them into one table would mean:
+            //   - NULL columns for most trade rows (no indicator yet)
+            //   - Updating rows when indicators refresh (breaks immutability)
+            //   - Impossible to query "what was RSI 3 pipeline runs ago?"
+            //
+            // Separate tables = clean separation of concerns.
+            // This is standard data warehouse design: fact table + derived table.
+            //
+            // COMPUTED_AT BIGINT:
+            //   We store the time of computation as a Unix nanosecond timestamp.
+            //   This lets you query: "show me RSI history for RELIANCE over time"
+            //   Every pipeline run adds a new row, preserving history.
+            //   This is the foundation of a time-series indicator store.
+            // ------------------------------------------------------------------
+            W.exec(R"(
+                CREATE TABLE IF NOT EXISTS technical_indicators (
+                    id          BIGSERIAL        PRIMARY KEY,
+                    symbol      VARCHAR(10)      NOT NULL,
+                    computed_at BIGINT           NOT NULL,
+                    sma         DOUBLE PRECISION NOT NULL,
+                    rsi         DOUBLE PRECISION NOT NULL CHECK (rsi >= 0 AND rsi <= 100),
+                    vwap        DOUBLE PRECISION NOT NULL CHECK (vwap > 0),
+                    period      INTEGER          NOT NULL CHECK (period > 0)
+                );
+            )");
+
+            // Index for the most common query pattern:
+            // "Give me RSI history for RELIANCE ordered by time"
+            W.exec(R"(
+                CREATE INDEX IF NOT EXISTS idx_indicators_symbol_time
+                ON technical_indicators (symbol, computed_at);
+            )");
+
             W.commit();
-            std::cout << "[DB] Schema initialized (Table 'trades' ready with constraints).\n";
+            std::cout << "[DB] Schema initialized (tables: trades, technical_indicators).\n";
         }
         catch (const std::exception &e)
         {
@@ -84,28 +97,8 @@ namespace MarketStream
     }
 
     // =========================================================================
-    // bulk_load()
-    // =========================================================================
-    // WHAT CHANGED AND WHY:
-    //
-    // The COPY stream (stream_to) is the fastest insert method but it has
-    // one critical limitation: it CANNOT handle ON CONFLICT (upsert) logic.
-    // COPY is a raw data pump — it bypasses the SQL engine entirely.
-    //
-    // SOLUTION: Staging Table Pattern (used in production ETL everywhere)
-    //
-    // STEP 1: Load all data into a TEMPORARY staging table via fast COPY.
-    //         Temp tables are in RAM — extremely fast, auto-deleted on disconnect.
-    //
-    // STEP 2: Use INSERT ... ON CONFLICT DO NOTHING to move from staging → trades.
-    //         ON CONFLICT DO NOTHING = "if trade_id already exists, skip this row".
-    //         This makes every pipeline run idempotent.
-    //
-    // WHY NOT JUST USE INSERT WITH ON CONFLICT DIRECTLY?
-    // INSERT processes one row at a time through the SQL engine.
-    // COPY bypasses the SQL engine = 10-50x faster.
-    // The staging pattern gets you BOTH: COPY speed + conflict handling.
-    // This is the exact pattern used by Kafka → PostgreSQL pipelines at scale.
+    // bulk_load() — Streams trades via COPY + staging table pattern
+    // Unchanged from Phase 4.
     // =========================================================================
     void DatabaseLoader::bulk_load(const std::vector<Trade> &trades)
     {
@@ -120,16 +113,6 @@ namespace MarketStream
             pqxx::connection C(conn_str);
             pqxx::work W(C);
 
-            // ---------------------------------------------------------------
-            // STEP 1: Create a temporary staging table
-            // ---------------------------------------------------------------
-            // TEMPORARY = exists only for this database session.
-            //             Auto-deleted when connection closes. No cleanup needed.
-            // ON COMMIT DROP = deleted even sooner: at the end of this transaction.
-            // It has the SAME columns as 'trades' but NO constraints (no PK).
-            // WHY NO CONSTRAINTS ON STAGING?
-            // We want COPY to be as fast as possible — no constraint checking overhead.
-            // We handle conflicts in Step 2 when moving to the real table.
             W.exec(R"(
                 CREATE TEMP TABLE trades_staging (
                     trade_id  BIGINT,
@@ -144,11 +127,6 @@ namespace MarketStream
                 ) ON COMMIT DROP;
             )");
 
-            // ---------------------------------------------------------------
-            // STEP 2: Stream all data into the STAGING table via fast COPY
-            // ---------------------------------------------------------------
-            // This is the same fast stream_to pattern as before,
-            // but pointed at trades_staging instead of trades.
             auto stream = pqxx::stream_to::table(
                 W,
                 {"trades_staging"},
@@ -170,17 +148,6 @@ namespace MarketStream
             }
             stream.complete();
 
-            // ---------------------------------------------------------------
-            // STEP 3: Move from staging → real table, skipping duplicates
-            // ---------------------------------------------------------------
-            // INSERT INTO trades           = insert into the real, constrained table
-            // SELECT * FROM trades_staging = pull all rows from our fast-loaded staging table
-            // ON CONFLICT (trade_id)       = when a trade_id already exists in trades...
-            // DO NOTHING                   = ...silently skip that row, don't error, don't update
-            //
-            // RESULT: If you run the pipeline 10 times with the same CSV,
-            // the database will have exactly 10 rows, not 100.
-            // This is idempotency — a production-grade guarantee.
             pqxx::result result = W.exec(R"(
                 INSERT INTO trades
                 SELECT * FROM trades_staging
@@ -189,18 +156,91 @@ namespace MarketStream
 
             W.commit();
 
-            // result.affected_rows() tells us how many rows were actually inserted
-            // vs skipped due to conflict. Useful for monitoring/logging.
             auto inserted = result.affected_rows();
-            auto skipped  = trades.size() - inserted;
+            auto skipped = trades.size() - inserted;
 
-            std::cout << "[DB] Bulk load complete.\n";
+            std::cout << "[DB] Trades load complete.\n";
             std::cout << "[DB]   Inserted : " << inserted << " new trades\n";
-            std::cout << "[DB]   Skipped  : " << skipped  << " duplicates\n";
+            std::cout << "[DB]   Skipped  : " << skipped << " duplicates\n";
         }
         catch (const std::exception &e)
         {
             std::cerr << "[DB ERROR] Bulk load failed: " << e.what() << "\n";
+            throw;
+        }
+    }
+
+    // =========================================================================
+    // save_indicators() — Persists computed indicators to technical_indicators
+    // =========================================================================
+    // WHY NOT USE COPY STREAM HERE?
+    // Indicator rows are few (one per symbol, typically 5-50 rows).
+    // COPY protocol has connection overhead that dominates for small batches.
+    // For small row counts, a regular INSERT inside one transaction is faster
+    // than COPY overhead + transaction + commit.
+    //
+    // The rule of thumb: use COPY for 1000+ rows. Use INSERT for < 100 rows.
+    //
+    // WHY INSERT EVERY RUN INSTEAD OF UPDATE?
+    // We WANT a new row every pipeline run. This preserves historical indicator
+    // values so you can answer: "What was RELIANCE RSI at 10:30am yesterday?"
+    // Updating would destroy that history. Inserting preserves it.
+    // This is the append-only / immutable log pattern used in data lakes.
+    //
+    // computed_at: We use std::chrono to get current nanosecond timestamp.
+    // This stamps exactly when this computation run happened.
+    // =========================================================================
+    void DatabaseLoader::save_indicators(const std::vector<IndicatorResult> &indicators)
+    {
+        if (indicators.empty())
+        {
+            std::cout << "[DB] No indicators to save.\n";
+            return;
+        }
+
+        try
+        {
+            pqxx::connection C(conn_str);
+            pqxx::work W(C);
+
+            // Get current timestamp in nanoseconds — stamps this computation run.
+            // Every indicator row from this run gets the SAME computed_at value,
+            // so you can query "give me all indicators from run X" easily.
+            auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+
+            for (const auto &ind : indicators)
+            {
+                // W.exec() with $1, $2... = parameterized query.
+                // WHY PARAMETERIZED AND NOT STRING CONCATENATION?
+                // String concatenation: "INSERT ... VALUES ('" + symbol + "', ...)"
+                // If symbol = "'; DROP TABLE trades; --" → SQL INJECTION attack.
+                // Parameterized: pqxx escapes the values before sending to PostgreSQL.
+                // The database sees them as DATA, not executable SQL.
+                // This is non-negotiable in production — always use parameters.
+                //
+                // pqxx::params{v1, v2, ...} passes typed parameters safely.
+                W.exec(
+                    "INSERT INTO technical_indicators "
+                    "(symbol, computed_at, sma, rsi, vwap, period) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    pqxx::params{
+                        ind.symbol,
+                        now_ns,
+                        ind.sma,
+                        ind.rsi,
+                        ind.vwap,
+                        ind.period});
+            }
+
+            W.commit();
+            std::cout << "[DB] Saved " << indicators.size()
+                      << " indicator rows to technical_indicators.\n";
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "[DB ERROR] save_indicators failed: " << e.what() << "\n";
             throw;
         }
     }
