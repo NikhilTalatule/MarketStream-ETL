@@ -52,20 +52,27 @@ namespace MarketStream
             // --- FIXED SECTION START ---
             // Old Way (Error): pqxx::stream_to stream = pqxx::stream_to::table(...)
             // New Way (Correct): Use the constructor directly
+            // In bulk_load, update the stream_to constructor AND the tuple:
+
             pqxx::stream_to stream(W,
                                    "trades",
-                                   std::vector<std::string>{"symbol", "price", "volume", "timestamp", "side", "trade_id"});
-            // --- FIXED SECTION END ---
+                                   std::vector<std::string>{
+                                       "trade_id", "order_id", "timestamp",
+                                       "symbol", "price", "volume",
+                                       "side", "type", "is_pro"});
 
             for (const auto &t : trades)
             {
                 stream << std::make_tuple(
+                    t.trade_id,
+                    t.order_id,
+                    t.timestamp,
                     t.symbol,
                     t.price,
-                    t.volume,
-                    t.timestamp,
+                    (int)t.volume, // Cast uint32_t → int for pqxx compatibility
                     std::string(1, t.side),
-                    t.trade_id);
+                    std::string(1, t.type),
+                    t.is_pro);
             }
 
             stream.complete();
