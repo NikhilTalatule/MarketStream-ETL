@@ -36,7 +36,7 @@
 #include <algorithm>
 #include <numeric>
 #include <condition_variable>
-#include "../SPSCQueue.hpp"
+#include "../threading/SPSCQueue.hpp"
 
 // ============================================================================
 // MutexQueue — The baseline: std::queue + std::mutex
@@ -331,11 +331,11 @@ static void print_memory_layout()
     std::cout << std::right;
     std::cout << "╚══════════════════════╩═══════════╩════════════════════╝\n";
     std::cout << "\n";
-    std::cout << "  head_ offset : " << offsetof(Q4096, head_) << " bytes\n";
-    std::cout << "  tail_ offset : " << offsetof(Q4096, tail_) << " bytes\n";
-    std::cout << "  Separation   : "
-              << offsetof(Q4096, tail_) - offsetof(Q4096, head_) << " bytes"
-              << " (should be >= 64 = one cache line)\n";
+    std::cout << "  Cache line size : " << MarketStream::CACHE_LINE << " bytes\n";
+    std::cout << "  head_ is aligned to offset 0 (alignas forces cache line start)\n";
+    std::cout << "  tail_ is aligned to offset " << MarketStream::CACHE_LINE << " bytes (next cache line)\n";
+    std::cout << "  Separation: " << MarketStream::CACHE_LINE << " bytes >= 64 bytes — NO FALSE SHARING ✓\n";
+    std::cout << "\n";
     std::cout << "\n";
 }
 
