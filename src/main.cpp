@@ -6,7 +6,7 @@
 #include "validator/TradeValidator.hpp"
 #include "benchmark/Benchmarker.hpp"
 #include "indicators/TechnicalIndicators.hpp"
-#include "threading/PipelineExecutor.hpp" // NEW
+#include "threading/ParallelLoader.hpp" // Phase 9: replaces PipelineExecutor
 
 int main()
 {
@@ -14,27 +14,27 @@ int main()
 
     std::cout << "===================================================\n";
     std::cout << "   MarketStream ETL | High-Frequency Trading Engine\n";
-    std::cout << "===================================================\n";
+    std::cout << "===================================================\n\n";
 
-    std::filesystem::path csv_file = "sample_data.csv";
+    std::filesystem::path csv_file = "large_data.csv"; // 1M row dataset
     std::string db_conn = "user=postgres password=Nikhil@10 host=localhost port=5432 dbname=etl_pipeline_db";
 
     std::vector<MarketStream::BenchmarkResult> bench_results;
 
     try
     {
-        // STAGE 1 — EXTRACT
-        std::cout << "\n[STAGE 1] EXTRACT\n";
+        // ── STAGE 1: EXTRACT ──────────────────────────────────────────────
+        std::cout << "[STAGE 1] EXTRACT\n";
         std::vector<MarketStream::Trade> raw_trades;
         {
             MarketStream::Benchmarker bm("Parse", 0, bench_results);
             raw_trades = MarketStream::CsvParser().parse(csv_file);
         }
         bench_results.back().item_count = raw_trades.size();
-        std::cout << "[SUCCESS] Parsed " << raw_trades.size() << " raw trades.\n";
+        std::cout << "[SUCCESS] Parsed " << raw_trades.size() << " raw trades.\n\n";
 
-        // STAGE 2 — VALIDATE
-        std::cout << "\n[STAGE 2] VALIDATE\n";
+        // ── STAGE 2: VALIDATE ─────────────────────────────────────────────
+        std::cout << "[STAGE 2] VALIDATE\n";
         std::vector<MarketStream::Trade> valid_trades;
         {
             MarketStream::Benchmarker bm("Validate", raw_trades.size(), bench_results);
@@ -45,9 +45,10 @@ int main()
             std::cerr << "[CRITICAL] Zero valid trades. Aborting.\n";
             return 1;
         }
+        std::cout << "\n";
 
-        // STAGE 3 — COMPUTE INDICATORS
-        std::cout << "\n[STAGE 3] COMPUTE INDICATORS\n";
+        // ── STAGE 3: COMPUTE INDICATORS ───────────────────────────────────
+        std::cout << "[STAGE 3] COMPUTE INDICATORS\n";
         std::vector<MarketStream::IndicatorResult> indicators;
         {
             MarketStream::Benchmarker bm("Indicators", valid_trades.size(), bench_results);
@@ -55,30 +56,44 @@ int main()
         }
         MarketStream::TechnicalIndicators::print_results(indicators);
 
-        // STAGE 4 — SCHEMA INIT (must be sequential — tables must exist before load)
-        std::cout << "[STAGE 4] INIT SCHEMA + PARALLEL LOAD\n";
-        MarketStream::DatabaseLoader loader(db_conn);
-        loader.init_schema();
+        // ── STAGE 4: INIT SCHEMA ──────────────────────────────────────────
+        // Schema init is always sequential — tables must exist before any load.
+        // This also handles CREATE TABLE IF NOT EXISTS idempotently.
+        std::cout << "[STAGE 4] INIT SCHEMA\n";
+        {
+            MarketStream::DatabaseLoader schema_loader(db_conn);
+            schema_loader.init_schema();
+        }
+        std::cout << "\n";
 
-        // ==================================================================
-        // STAGE 4b — PARALLEL: Load trades + Save indicators simultaneously
-        // ==================================================================
-        // WHY IS init_schema() SEQUENTIAL BUT load IS PARALLEL?
-        // init_schema() must complete FIRST — it creates the tables.
-        // If bulk_load and save_indicators ran before init_schema() finished,
-        // they'd try to write to tables that don't exist yet → crash.
-        // This is a DEPENDENCY: schema creation → data loading.
-        // Dependencies must be sequential. Independent work can be parallel.
-        // Identifying what is and isn't a dependency is the core skill of
-        // concurrent system design.
-        // ==================================================================
-        MarketStream::PipelineExecutor::run_parallel_load(
-            db_conn,
-            valid_trades,
-            indicators,
-            bench_results);
+        // ── STAGE 5: PARALLEL LOAD ────────────────────────────────────────
+        // Phase 9: 4 threads × 250K rows each, all COPYing simultaneously.
+        //
+        // WHY STAGE 5 AND NOT STAGE 4b?
+        // In Phase 6, parallel was a sub-step of Stage 4.
+        // Now it's a full stage — it has its own thread pool, its own
+        // prepare/finalize sequence, and its own benchmark entries.
+        // Elevating it to a named stage makes the architecture clearer.
+        //
+        // NOTE: TRUNCATE TABLE trades before running with new data.
+        // finalize_parallel_load() uses ADD PRIMARY KEY which requires
+        // no duplicate trade_ids. Existing rows from prior runs will
+        // cause a conflict. Run this in pgAdmin first:
+        //   TRUNCATE TABLE trades;
+        //   TRUNCATE TABLE technical_indicators;
+        std::cout << "[STAGE 5] PARALLEL LOAD (4 threads)\n";
+        {
+            MarketStream::Benchmarker bm("Parallel Load", valid_trades.size(), bench_results);
+            MarketStream::ParallelLoader::run(
+                db_conn,
+                valid_trades,
+                indicators,
+                bench_results,
+                4 // num_threads — try 2, 4, 8 to find optimal for your hardware
+            );
+        }
 
-        // PERFORMANCE REPORT
+        // ── PERFORMANCE REPORT ────────────────────────────────────────────
         MarketStream::print_benchmark_report(bench_results);
 
         std::cout << "[SUCCESS] ETL Pipeline Finished.\n";
