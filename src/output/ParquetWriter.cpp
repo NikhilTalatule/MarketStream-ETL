@@ -128,11 +128,11 @@ namespace MarketStream
         auto schema = arrow::schema({arrow::field("trade_id", arrow::uint64()),
                                      arrow::field("order_id", arrow::uint64()),
                                      arrow::field("timestamp", arrow::int64()), // nanoseconds since epoch
-                                     arrow::field("symbol", arrow::dictionary(arrow::int32(), arrow::utf8())),
+                                     arrow::field("symbol", arrow::dictionary(arrow::int8(), arrow::utf8())),
                                      arrow::field("price", arrow::float64()),
                                      arrow::field("volume", arrow::uint32()),
-                                     arrow::field("side", arrow::dictionary(arrow::int32(), arrow::utf8())),
-                                     arrow::field("type", arrow::dictionary(arrow::int32(), arrow::utf8())),
+                                     arrow::field("side", arrow::dictionary(arrow::int8(), arrow::utf8())),
+                                     arrow::field("type", arrow::dictionary(arrow::int8(), arrow::utf8())),
                                      arrow::field("is_pro", arrow::boolean())});
 
         // ─────────────────────────────────────────────────────────────────────
