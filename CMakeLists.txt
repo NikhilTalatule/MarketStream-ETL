@@ -74,3 +74,15 @@ add_executable(generate_data
     src/tools/generate_data.cpp
 )
 # No extra libraries: generates only a CSV file
+
+# ─── ADD THIS BLOCK to your existing CMakeLists.txt ─────────────────────────
+# Place it AFTER the generate_data executable block, at the bottom of the file.
+
+# ─── Phase 11: SPSC Ring Buffer Benchmark ─────────────────────────────────────
+# Pure C++20 standard library — no external dependencies needed.
+# SPSCQueue.hpp lives in src/threading/ alongside ThreadPool.hpp
+add_executable(spsc_benchmark
+    src/tools/spsc_benchmark.cpp
+)
+# No target_link_libraries needed: pure C++20 standard library only.
+# std::atomic, std::thread, std::optional — all built into GCC's stdlib.
