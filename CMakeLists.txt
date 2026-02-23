@@ -86,3 +86,8 @@ add_executable(spsc_benchmark
 )
 # No target_link_libraries needed: pure C++20 standard library only.
 # std::atomic, std::thread, std::optional — all built into GCC's stdlib.
+
+# ─── Phase 12: False Sharing Benchmark ───────────────────────────────────────
+add_executable(false_sharing_benchmark
+    src/tools/false_sharing_benchmark.cpp
+)
