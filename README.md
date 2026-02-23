@@ -271,6 +271,5 @@ ORDER BY computed_at;
 ## Developer
 
 **Nikhil** — Building toward Data Engineering / Business Intelligence roles.  
-Target: T13 BI track. Low-latency pipeline techniques applied to quantitative analysis model feeding (LSTM, Transformer-based systematic swing trading).
 
 ---
