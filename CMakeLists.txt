@@ -91,3 +91,46 @@ add_executable(spsc_benchmark
 add_executable(false_sharing_benchmark
     src/tools/false_sharing_benchmark.cpp
 )
+# ─── Phase 14: WebSocket Real-Time Feed Demo ──────────────────────────────────
+#
+# Boost.Beast is HEADER-ONLY — no libboost_beast to link against.
+# But it DEPENDS ON Boost.Asio (also header-only) which DEPENDS ON Boost.System.
+# Boost.System IS a compiled library (.dll/.a) that we must link.
+#
+# WHY find_package(Boost REQUIRED COMPONENTS system)?
+#   COMPONENTS = we only need the 'system' compiled library.
+#   Boost::system sets include paths and link flags automatically.
+#
+# WHY nlohmann_json::nlohmann_json?
+#   This is an INTERFACE target — header-only, no .dll to link.
+#   Just adds the include path so #include <nlohmann/json.hpp> resolves.
+#
+# WHY ws2_32 and wsock32?
+#   Windows does NOT include socket support by default in the CRT.
+#   ws2_32.lib = Winsock 2 (TCP/IP, accept, connect, send, recv).
+#   wsock32.lib = older Winsock 1 compatibility (Boost.Asio needs this on some MSYS2 builds).
+#   Linux: these are built into libc — no explicit linking needed.
+#
+# WHY _WIN32_WINNT=0x0601?
+#   Boost.Asio uses Windows Vista+ APIs.
+#   _WIN32_WINNT tells the Windows headers which API version to expose.
+#   0x0601 = Windows 7 (covers all modern Windows including your Win11).
+#   Without this: MSYS2 may default to an older value causing compile errors.
+
+find_package(Boost REQUIRED COMPONENTS system)
+find_package(nlohmann_json REQUIRED)
+
+add_executable(websocket_demo
+    src/tools/websocket_demo.cpp
+)
+
+target_compile_definitions(websocket_demo PRIVATE
+    _WIN32_WINNT=0x0601   # Windows 7+ APIs (required by Boost.Asio on Windows)
+)
+
+target_link_libraries(websocket_demo PRIVATE
+    Boost::system           # Boost.System (compiled) — required by Boost.Asio
+    nlohmann_json::nlohmann_json  # JSON parsing (header-only interface target)
+    ws2_32                  # Winsock 2 — TCP/IP on Windows
+    wsock32                 # Winsock 1 compat — some Boost.Asio internals need this
+)
