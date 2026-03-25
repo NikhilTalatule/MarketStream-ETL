@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <filesystem>
+#include <cstdlib>          // std::getenv — reads environment variables
 #include "parser/CsvParser.hpp"
 #include "database/DatabaseLoader.hpp"
 #include "validator/TradeValidator.hpp"
@@ -18,9 +19,48 @@ int main()
     std::cout << "===================================================\n\n";
 
     std::filesystem::path csv_file = "large_data.csv";
-    std::string db_conn =
-        "user=postgres password=Nikhil@10 "
-        "host=localhost port=5432 dbname=etl_pipeline_db";
+
+    // -------------------------------------------------------------------------
+    // IMPROVEMENT 1: Read DB connection string from environment variable.
+    //
+    // WHY NOT HARDCODE THE PASSWORD?
+    //   A hardcoded password in source code is a security vulnerability.
+    //   Anyone who sees this file (on GitHub, in a code review, over your
+    //   shoulder) instantly has your database credentials.
+    //
+    // HOW TO SET THE ENVIRONMENT VARIABLE (run this ONCE in your terminal):
+    //   On MSYS2 / Linux / Mac, add this line to your ~/.bashrc file:
+    //
+    //     export ETL_DB_CONN="user=postgres password=YOUR_PASSWORD host=localhost port=5432 dbname=etl_pipeline_db"
+    //
+    //   Then reload it:
+    //     source ~/.bashrc
+    //
+    //   On Windows CMD (not MSYS2):
+    //     setx ETL_DB_CONN "user=postgres password=YOUR_PASSWORD host=localhost port=5432 dbname=etl_pipeline_db"
+    //
+    // HOW std::getenv WORKS:
+    //   std::getenv("ETL_DB_CONN") asks the OS:
+    //     "Do you have a variable called ETL_DB_CONN?"
+    //   If YES  → returns a pointer to the value string
+    //   If NO   → returns nullptr (null pointer — nothing)
+    //
+    // WHY CHECK FOR nullptr?
+    //   If someone forgets to set the variable and we use nullptr as a string,
+    //   the program crashes with an unhelpful segfault.
+    //   We check explicitly and print a clear error message instead.
+    // -------------------------------------------------------------------------
+    const char* env_conn = std::getenv("ETL_DB_CONN");
+    if (!env_conn)
+    {
+        std::cerr << "[ERROR] ETL_DB_CONN environment variable is not set.\n";
+        std::cerr << "  Please set it before running the pipeline.\n";
+        std::cerr << "  Example (add to ~/.bashrc):\n";
+        std::cerr << "    export ETL_DB_CONN=\"user=postgres password=YOUR_PASSWORD"
+                     " host=localhost port=5432 dbname=etl_pipeline_db\"\n";
+        return 1;
+    }
+    std::string db_conn = env_conn;
 
     std::vector<MarketStream::BenchmarkResult> bench_results;
 
